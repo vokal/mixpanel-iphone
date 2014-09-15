@@ -25,7 +25,7 @@
 #import "MPWebSocket.h"
 #import "MPABTestDesignerConnection.h"
 
-#define VERSION @"2.5.1"
+#define VERSION @"2.5.2"
 
 #ifdef MIXPANEL_LOG
 #define MixpanelLog(...) NSLog(__VA_ARGS__)
@@ -155,6 +155,8 @@ static Mixpanel *sharedInstance = nil;
         self.showNotificationOnActive = YES;
         self.checkForNotificationsOnActive = YES;
         self.checkForVariantsOnActive = YES;
+        self.checkForSurveysOnActive = YES;
+        self.miniNotificationPresentationTime = 6.0;
 
         self.distinctId = [self defaultDistinctId];
         self.superProperties = [NSMutableDictionary dictionary];
@@ -171,7 +173,6 @@ static Mixpanel *sharedInstance = nil;
 
         self.decideResponseCached = NO;
         self.showSurveyOnActive = YES;
-        self.checkForSurveysOnActive = YES;
         self.surveys = nil;
         self.currentlyShowingSurvey = nil;
         self.shownSurveyCollections = [NSMutableSet set];
@@ -186,8 +187,6 @@ static Mixpanel *sharedInstance = nil;
 
         if (launchOptions && launchOptions[UIApplicationLaunchOptionsRemoteNotificationKey]) {
             [self trackPushNotification:launchOptions[UIApplicationLaunchOptionsRemoteNotificationKey] event:@"$app_open"];
-        } else {
-            [self track:@"$app_open"];
         }
     }
 
@@ -274,6 +273,7 @@ static Mixpanel *sharedInstance = nil;
                                name:@"com.parse.bolts.measurement_event"
                              object:nil];
 
+#ifndef DISABLE_MIXPANEL_AB_DESIGNER
     dispatch_async(dispatch_get_main_queue(), ^{
         UILongPressGestureRecognizer *recognizer = [[UILongPressGestureRecognizer alloc] initWithTarget:self action:@selector(connectGestureRecognized:)];
         recognizer.minimumPressDuration = 3;
@@ -283,9 +283,9 @@ static Mixpanel *sharedInstance = nil;
 #else
         recognizer.numberOfTouchesRequired = 4;
 #endif
-
-        [[UIApplication sharedApplication].delegate.window addGestureRecognizer:recognizer];
+        [[UIApplication sharedApplication].keyWindow addGestureRecognizer:recognizer];
     });
+#endif
 }
 
 - (NSString *)description
@@ -350,20 +350,23 @@ static Mixpanel *sharedInstance = nil;
     CTTelephonyNetworkInfo *networkInfo = [[CTTelephonyNetworkInfo alloc] init];
     CTCarrier *carrier = [networkInfo subscriberCellularProvider];
 
-    [p setValue:@"iphone" forKey:@"mp_lib"];
-    [p setValue:VERSION forKey:@"$lib_version"];
+    // Use setValue semantics to avoid adding keys where value can be nil.
     [p setValue:[[NSBundle mainBundle] infoDictionary][@"CFBundleVersion"] forKey:@"$app_version"];
     [p setValue:[[NSBundle mainBundle] infoDictionary][@"CFBundleShortVersionString"] forKey:@"$app_release"];
-    [p setValue:@"Apple" forKey:@"$manufacturer"];
-    [p setValue:[device systemName] forKey:@"$os"];
-    [p setValue:[device systemVersion] forKey:@"$os_version"];
-    [p setValue:deviceModel forKey:@"$model"];
-    [p setValue:deviceModel forKey:@"mp_device_model"]; // legacy
-    [p setValue:@((NSInteger)size.height) forKey:@"$screen_height"];
-    [p setValue:@((NSInteger)size.width) forKey:@"$screen_width"];
     [p setValue:[self IFA] forKey:@"$ios_ifa"];
     [p setValue:carrier.carrierName forKey:@"$carrier"];
 
+    [p addEntriesFromDictionary:@{
+             @"mp_lib": @"iphone",
+             @"$lib_version": VERSION,
+             @"$manufacturer": @"Apple",
+             @"$os": [device systemName],
+             @"$os_version": [device systemVersion],
+             @"$model": deviceModel,
+             @"mp_device_model": deviceModel, //legacy
+             @"$screen_height": @((NSInteger)size.height),
+             @"$screen_width": @((NSInteger)size.width)
+    }];
     return [p copy];
 }
 
@@ -1437,8 +1440,7 @@ static Mixpanel *sharedInstance = nil;
 
     [controller showWithAnimation];
 
-    double delayInSeconds = 5.0;
-    dispatch_time_t popTime = dispatch_time(DISPATCH_TIME_NOW, (int64_t)(delayInSeconds * NSEC_PER_SEC));
+    dispatch_time_t popTime = dispatch_time(DISPATCH_TIME_NOW, (int64_t)(self.miniNotificationPresentationTime * NSEC_PER_SEC));
     dispatch_after(popTime, dispatch_get_main_queue(), ^(void){
         [self notificationController:controller wasDismissedWithStatus:NO];
     });
@@ -1605,18 +1607,16 @@ static Mixpanel *sharedInstance = nil;
 
 - (NSDictionary *)collectAutomaticPeopleProperties
 {
-    NSMutableDictionary *p = nil;
+    NSMutableDictionary *p = [NSMutableDictionary dictionary];
     __strong Mixpanel *strongMixpanel = _mixpanel;
-    if (strongMixpanel) {
-        p = [@{@"$ios_device_model": [strongMixpanel deviceModel],
-               @"$ios_version": [[UIDevice currentDevice] systemVersion],
-               @"$ios_lib_version": VERSION,
-               @"$ios_app_version": [[NSBundle mainBundle] infoDictionary][@"CFBundleVersion"],
-               @"$ios_app_release": [[NSBundle mainBundle] infoDictionary][@"CFBundleShortVersionString"]
-               } mutableCopy];
-        [p setValue:[strongMixpanel IFA] forKey:@"$ios_ifa"];
-    }
-    return p ? [p copy] : @{};
+    [p setValue:[strongMixpanel deviceModel] forKey:@"$ios_device_model"];
+    [p setValue:[[NSBundle mainBundle] infoDictionary][@"CFBundleVersion"] forKey:@"$ios_app_version"];
+    [p setValue:[[NSBundle mainBundle] infoDictionary][@"CFBundleShortVersionString"] forKey:@"$ios_app_release"];
+    [p setValue:[strongMixpanel IFA] forKey:@"$ios_ifa"];
+    [p addEntriesFromDictionary:@{@"$ios_version": [[UIDevice currentDevice] systemVersion],
+                                 @"$ios_lib_version": VERSION,
+                                  }];
+    return [p copy];
 }
 
 - (void)addPeopleRecordToQueueWithAction:(NSString *)action andProperties:(NSDictionary *)properties
